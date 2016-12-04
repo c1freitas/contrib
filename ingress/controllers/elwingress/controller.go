@@ -28,7 +28,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/foolusion/choices/elwin"
+	"github.com/foolusion/elwinprotos/elwin"
 	"github.com/foolusion/elwinprotos/storage"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/apis/extensions"
@@ -54,7 +54,7 @@ func main() {
 		log.Fatal(err)
 	} else {
 		defer storageClientConn.Close()
-		esc = storage.NewStorageClient(storageClientConn)
+		esc = storage.NewElwinStorageClient(storageClientConn)
 	}
 
 	var ingClient client.IngressInterface
