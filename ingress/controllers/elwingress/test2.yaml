@@ -1,0 +1,70 @@
+kind: Ingress
+apiVersion: extensions/v1beta1
+metadata:
+  name: test2
+spec:
+  rules:
+  - host: test2.platform.prod.aws.cloud.nordstrom.net
+    http:
+      paths:
+      - backend:
+          serviceName: test2
+          servicePort: 80
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: test2
+  labels:
+    app: test2
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+  selector:
+    run: test2
+---
+kind: ReplicationController
+apiVersion: v1
+metadata:
+  name: test2
+  labels:
+    app: test2
+spec:
+  replicas: 1
+  selector:
+    run: test2
+  template:
+    metadata:
+      labels:
+        run: test2
+    spec:
+      volumes:
+      - name: html
+        configMap:
+          name: test2-html
+      containers:
+      - image: nginx:1.11
+        imagePullPolicy: Always
+        name: test2
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: test2-html
+data:
+  index.html: |-
+    <!doctype html>
+    <html lang="en">
+    <head>
+    <title>Test</title>
+    </head>
+    <body>
+    <marquee><h1>Test 2</h1></marquee>
+    </body>
+    </html>

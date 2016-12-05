@@ -99,11 +99,6 @@ type Server struct {
 	rules map[string]http.Handler
 }
 
-type hostPort struct {
-	host string
-	path string
-}
-
 func (s *Server) UpdateRules(il *extensions.IngressList) {
 	rules := parseRules(il)
 	s.mu.Lock()
@@ -120,21 +115,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handler(req *http.Request) http.Handler {
-	hpp := hostPort{host: req.Host, path: req.URL.Path}
-	log.Println(hpp.String())
+	host := req.Host
+	log.Println(host)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if h, ok := s.rules[hpp.String()]; ok {
+	if h, ok := s.rules[host]; ok {
 		return h
 	}
 	return nil
-}
-
-func (h hostPort) String() string {
-	if h.path == "" {
-		h.path = "/"
-	}
-	return h.host + h.path
 }
 
 func parseRules(il *extensions.IngressList) map[string]http.Handler {
@@ -150,12 +138,11 @@ func parseRules(il *extensions.IngressList) map[string]http.Handler {
 	for _, ing := range il.Items {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				hpp := hostPort{host: rule.Host, path: path.Path}
-				log.Println(hpp.String(), a)
-				if _, ok := a[hpp.String()]; !ok {
-					handlers[hpp.String()] = defaultHandler(path.Backend)
+				log.Println(rule.Host)
+				if _, ok := a[rule.Host]; !ok {
+					handlers[rule.Host] = defaultHandler(path.Backend)
 				} else {
-					handlers[hpp.String()] = elwinHandler(hpp.String(), path.Backend)
+					handlers[rule.Host] = elwinHandler(rule.Host, path.Backend)
 				}
 			}
 		}

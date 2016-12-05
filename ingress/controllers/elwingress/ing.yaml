@@ -1,12 +1,12 @@
 apiVersion: extensions/v1beta1
 kind: Ingress
 metadata:
-  name: test1
+  name: test
 spec:
   rules:
-  - host: test.poop
+  - host: demo.elwin.aws.cloud.nordstrom.net
     http:
       paths:
       - backend:
-          serviceName: "test-poop"
+          serviceName: test1
           servicePort: 80

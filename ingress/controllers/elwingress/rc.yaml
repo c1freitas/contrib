@@ -32,7 +32,7 @@ spec:
         run: elwingress
     spec:
       containers:
-      - image: foolusion/elwingress:v0.0.7
+      - image: foolusion/elwingress:v0.0.8
         imagePullPolicy: Always
         name: elwingress
         ports:
