@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM gcr.io/google_containers/nginx
-COPY controller /
-COPY default.conf /etc/nginx/nginx.conf
-CMD ["/controller"]
+FROM busybox
+COPY elwingress /elwingress
+CMD ["/elwingress"]

@@ -22,7 +22,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"reflect"
 	"sync"
 
@@ -42,16 +41,17 @@ var (
 )
 
 func main() {
+	log.Println("Starting Elwingress...")
 	s := &Server{}
 
-	if elwinClientConn, err := grpc.Dial("elwin-grpc.svc.default.cluster.local:80", grpc.WithInsecure()); err != nil {
-		log.Fatal(err)
+	if elwinClientConn, err := grpc.Dial("elwin-grpc.ato.svc.cluster.local:80", grpc.WithInsecure()); err != nil {
+		log.Fatalf("couldn't connect to elwin: %s", err)
 	} else {
 		defer elwinClientConn.Close()
 		ec = elwin.NewElwinClient(elwinClientConn)
 	}
-	if storageClientConn, err := grpc.Dial("elwin-storage.svc.default.cluster.local:80", grpc.WithInsecure()); err != nil {
-		log.Fatal(err)
+	if storageClientConn, err := grpc.Dial("elwin-storage.ato.svc.cluster.local:80", grpc.WithInsecure()); err != nil {
+		log.Fatalf("couldn't connect to elwin-storage: %s", err)
 	} else {
 		defer storageClientConn.Close()
 		esc = storage.NewElwinStorageClient(storageClientConn)
@@ -61,7 +61,7 @@ func main() {
 	if kubeClient, err := client.NewInCluster(); err != nil {
 		log.Fatalf("Failed to create client: %v.", err)
 	} else {
-		ingClient = kubeClient.Extensions().Ingress(api.NamespaceAll)
+		ingClient = kubeClient.Extensions().Ingress("ato")
 	}
 	rateLimiter := flowcontrol.NewTokenBucketRateLimiter(0.1, 1)
 	known := &extensions.IngressList{}
@@ -71,8 +71,9 @@ func main() {
 	go func() {
 		l, err := net.Listen("tcp", ":8080")
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("couldn't open listener on port 8080: %s", err)
 		}
+		log.Println("Listening on :8080")
 		defer l.Close()
 		log.Fatal(http.Serve(l, s))
 	}()
@@ -95,7 +96,12 @@ func main() {
 
 type Server struct {
 	mu    sync.RWMutex
-	rules map[url.URL]http.Handler
+	rules map[string]http.Handler
+}
+
+type hostPort struct {
+	host string
+	path string
 }
 
 func (s *Server) UpdateRules(il *extensions.IngressList) {
@@ -114,20 +120,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handler(req *http.Request) http.Handler {
-	u, err := url.Parse("http://" + req.Host + req.URL.Path)
-	if err != nil {
-		return nil
-	}
+	hpp := hostPort{host: req.Host, path: req.URL.Path}
+	log.Println(hpp.String())
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if h, ok := s.rules[*u]; ok {
+	if h, ok := s.rules[hpp.String()]; ok {
 		return h
 	}
 	return nil
 }
 
-func parseRules(il *extensions.IngressList) map[url.URL]http.Handler {
-	var a map[url.URL]struct{}
+func (h hostPort) String() string {
+	if h.path == "" {
+		h.path = "/"
+	}
+	return h.host + h.path
+}
+
+func parseRules(il *extensions.IngressList) map[string]http.Handler {
+	var a map[string]struct{}
 	if resp, err := esc.All(context.Background(), &storage.AllRequest{Environment: storage.Production}); err != nil {
 		log.Fatalf("All request failed")
 	} else if resp.Namespaces == nil {
@@ -135,16 +146,16 @@ func parseRules(il *extensions.IngressList) map[url.URL]http.Handler {
 	} else {
 		a = filter(resp.Namespaces)
 	}
-	handlers := make(map[url.URL]http.Handler, len(il.Items))
+	handlers := make(map[string]http.Handler, len(il.Items))
 	for _, ing := range il.Items {
 		for _, rule := range ing.Spec.Rules {
 			for _, path := range rule.HTTP.Paths {
-				if u, err := url.Parse("http://" + rule.Host + path.Path); err != nil {
-					log.Fatal(err)
-				} else if _, ok := a[*u]; !ok {
-					handlers[*u] = defaultHandler(path.Backend)
+				hpp := hostPort{host: rule.Host, path: path.Path}
+				log.Println(hpp.String(), a)
+				if _, ok := a[hpp.String()]; !ok {
+					handlers[hpp.String()] = defaultHandler(path.Backend)
 				} else {
-					handlers[*u] = elwinHandler(u, path.Backend)
+					handlers[hpp.String()] = elwinHandler(hpp.String(), path.Backend)
 				}
 			}
 		}
@@ -152,19 +163,15 @@ func parseRules(il *extensions.IngressList) map[url.URL]http.Handler {
 	return handlers
 }
 
-func filter(ns []*storage.Namespace) map[url.URL]struct{} {
-	var a map[url.URL]struct{}
+func filter(ns []*storage.Namespace) map[string]struct{} {
+	a := make(map[string]struct{}, len(ns))
 	for _, n := range ns {
 		if ns == nil {
 			continue
 		}
 		for _, l := range n.Labels {
 			if l == "ingress" {
-				if u, err := url.Parse(n.Name); err != nil {
-					log.Fatal(err)
-				} else {
-					a[*u] = struct{}{}
-				}
+				a[n.Name] = struct{}{}
 			}
 		}
 	}
@@ -172,24 +179,40 @@ func filter(ns []*storage.Namespace) map[url.URL]struct{} {
 }
 
 func defaultHandler(backend extensions.IngressBackend) http.Handler {
+	log.Printf("creating default handler for %s", backend.ServiceName)
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
+			log.Println("default handler")
+			b, err := httputil.DumpRequest(req, false)
+			if err != nil {
+				log.Println("couldn't dump request")
+			}
+			log.Println(string(b))
+			req.URL.Scheme = "http"
 			req.URL.Host = changeHost(backend)
 		},
 	}
 }
 
 func changeHost(backend extensions.IngressBackend) string {
-	var host = backend.ServiceName + ".svc.default.cluster.local"
+	var host = backend.ServiceName + ".ato.svc.cluster.local"
 	if port := backend.ServicePort.String(); port != "" {
 		host += ":" + port
 	}
 	return host
 }
 
-func elwinHandler(u *url.URL, backend extensions.IngressBackend) http.Handler {
+func elwinHandler(hostPath string, backend extensions.IngressBackend) http.Handler {
+	log.Printf("creating elwin handler for %s", backend.ServiceName)
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
+			log.Println("elwin handler")
+			b, err := httputil.DumpRequest(req, false)
+			if err != nil {
+				log.Printf("couldn't dump request")
+			}
+			log.Println(string(b))
+			req.URL.Scheme = "http"
 			if id, err := req.Cookie("elwin"); err != nil {
 				req.URL.Host = changeHost(backend)
 			} else if resp, err := ec.GetNamespaces(context.TODO(), &elwin.Identifier{TeamID: "ingress", UserID: id.Value}); err != nil {
@@ -198,7 +221,7 @@ func elwinHandler(u *url.URL, backend extensions.IngressBackend) http.Handler {
 				req.URL.Host = changeHost(backend)
 			} else if exps := resp.GetExperiments(); exps == nil {
 				req.URL.Host = changeHost(backend)
-			} else if exp, ok := exps[u.String()]; !ok {
+			} else if exp, ok := exps[hostPath]; !ok {
 				req.URL.Host = changeHost(backend)
 			} else if len(exp.Params) != 1 {
 				req.URL.Host = changeHost(backend)
